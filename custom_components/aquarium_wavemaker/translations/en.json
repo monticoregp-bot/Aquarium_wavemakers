@@ -1,0 +1,80 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Aquarium Wavemaker",
+        "description": "Create a Toggle helper first (Settings > Devices & services > Helpers > Create helper > Toggle) and select it as the master toggle. ON lets the schedule drive the pumps; OFF stops sending, and the pumps keep their last wave. Add the integration again for a second aquarium, each with its own toggle.",
+        "data": {
+          "name": "Aquarium name",
+          "master_entity": "Master toggle (input_boolean)"
+        }
+      },
+      "pump": {
+        "title": "First pump",
+        "description": "The ESPHome action is the one your wavemaker ESP32 exposes, for example esphome.wavemaker_set_wave (see the example wavemaker.yaml). The channel is the pump's number on that ESP32, starting at 0. You can add pumps, followers and schedules in the Aquarium Wavemaker card.",
+        "data": {
+          "name": "Pump name",
+          "service": "ESPHome action",
+          "channel": "Channel on the ESP32"
+        }
+      }
+    },
+    "error": {
+      "invalid_name": "Use lowercase letters, digits and underscores only (max 32 characters).",
+      "invalid_service": "Use the form esphome.node_set_wave."
+    },
+    "abort": {
+      "already_configured": "That master toggle is already used by another aquarium."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Aquarium Wavemaker options",
+        "data": {
+          "master_entity": "Master toggle (input_boolean)"
+        }
+      }
+    }
+  },
+  "services": {
+    "set_wave": {
+      "name": "Set wave",
+      "description": "Send a wave mode to a pump for testing. Not saved.",
+      "fields": {
+        "mode": {
+          "name": "Mode",
+          "description": "Wave mode."
+        },
+        "low": {
+          "name": "Minimum",
+          "description": "Minimum speed in %."
+        },
+        "high": {
+          "name": "Maximum",
+          "description": "Maximum speed in %."
+        },
+        "level": {
+          "name": "Level",
+          "description": "Speed in % for constant mode."
+        },
+        "period": {
+          "name": "Period",
+          "description": "Seconds per cycle."
+        },
+        "pulse": {
+          "name": "Pulse time",
+          "description": "Seconds at the maximum per period (pulse)."
+        },
+        "interval": {
+          "name": "Random interval",
+          "description": "Seconds between random targets."
+        },
+        "fade": {
+          "name": "Cross-fade",
+          "description": "Seconds to blend into this wave."
+        }
+      }
+    }
+  }
+}

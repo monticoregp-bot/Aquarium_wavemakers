@@ -1,0 +1,141 @@
+# Example ESPHome node for the Aquarium Wavemaker integration: two BLDC pumps, each
+# driven by a PWM-input motor driver with an enable pin.
+#
+# Copy this file AND wave_engine.h into your ESPHome configuration folder.
+# Needs ESPHome 2024.8 or newer (the `api: actions:` syntax).
+#
+# How it fits together
+#   * Home Assistant picks the wave mode that is due (time blocks, followers,
+#     inverse pumps) and sends it with ONE action call, `set_wave`, about once a
+#     minute and at every change. Nothing is streamed.
+#   * wave_engine.h draws the waveform locally 50 times a second, so wave, pulse,
+#     surge and random stay smooth whatever Wi-Fi or Home Assistant do. If either
+#     goes away the pump simply keeps running its last wave.
+#   * When settings change, the old and new waves cross-fade (60 s by default). The
+#     minimum speed, maximum speed and ramp limit you set in Home Assistant are
+#     applied here, on the device, to protect the motor.
+#
+# In the integration, set each pump's "ESPHome action" to
+#   esphome.${name}_set_wave
+# and its channel to 0 or 1 (the order of the outputs below). You can extend the
+# `interval:` block and outputs for up to 8 channels.
+
+substitutions:
+  name: wavemaker
+  friendly_name: Wavemaker
+  # Speed (%) the pumps run at after a reboot, until Home Assistant sends settings
+  # (at most a minute). Use a speed your tank is happy with.
+  boot_level: "50"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  includes:
+    - wave_engine.h
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          // channel, mode, low, high, level, period, pulse, change_every, seed, anchor,
+          // invert, fade, speed_min, speed_max, ramp, now_ms
+          wavemaker::apply(0, "constant", 0, 0, ${boot_level}, 10, 5, 10, 0, 0, false, 0, 10, 100, 100, millis());
+          wavemaker::apply(1, "constant", 0, 0, ${boot_level}, 10, 5, 10, 0, 0, false, 0, 10, 100, 100, millis());
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Wavemaker Fallback"
+    password: !secret fallback_password
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# The clock lets every ESP32 draw the same phase, so followers and inverse pumps on
+# different devices stay in step. (Use `platform: sntp` instead to avoid Home
+# Assistant for time.) Without a synchronised clock the phase counts from the moment
+# settings arrive, which still works but cannot keep two devices aligned.
+time:
+  - platform: homeassistant
+    id: ha_time
+    on_time_sync:
+      - lambda: |-
+          wavemaker::clock_state.sync(static_cast<double>(id(ha_time).now().timestamp), millis());
+
+api:
+  encryption:
+    key: !secret api_key
+  reboot_timeout: 0s   # keep pumping even when Home Assistant is away
+  actions:
+    - action: set_wave
+      variables:
+        channel: int
+        mode: string      # constant | wave | pulse | surge | random
+        low: float        # % (wave, pulse, surge, random)
+        high: float
+        level: float      # % (constant)
+        period: float     # s (wave, pulse, surge)
+        pulse: float      # s at `high` per period (pulse)
+        change_every: float  # s between random targets (random)
+        seed: int         # random sequence seed
+        anchor: int       # epoch seconds the phase counts from (block start)
+        invert: bool      # opposite phase (inverse pumps)
+        fade: float       # s to cross-fade from the previous settings
+        speed_min: float  # % minimum running speed
+        speed_max: float  # % maximum speed
+        ramp: float       # % per second the output may change by
+      then:
+        - lambda: |-
+            wavemaker::apply(channel, mode.c_str(), low, high, level, period, pulse, change_every,
+                             seed, anchor, invert, fade, speed_min, speed_max, ramp, millis());
+
+# One PWM output and one enable output per pump. Adjust pins and the PWM frequency to
+# your motor driver. If your driver is active-low, add `inverted: true`.
+output:
+  - platform: ledc
+    id: pwm_0
+    pin: GPIO25
+    frequency: 20000Hz
+  - platform: gpio
+    id: enable_0
+    pin: GPIO26
+  - platform: ledc
+    id: pwm_1
+    pin: GPIO27
+    frequency: 20000Hz
+  - platform: gpio
+    id: enable_1
+    pin: GPIO14
+
+interval:
+  - interval: 20ms
+    then:
+      - lambda: |-
+          wavemaker::tick(millis());
+          const float out0 = wavemaker::channels[0].output();
+          id(pwm_0).set_level(out0 / 100.0f);
+          if (out0 > 0.0f) id(enable_0).turn_on(); else id(enable_0).turn_off();
+          const float out1 = wavemaker::channels[1].output();
+          id(pwm_1).set_level(out1 / 100.0f);
+          if (out1 > 0.0f) id(enable_1).turn_on(); else id(enable_1).turn_off();
+
+# Optional: report what each pump is actually putting out.
+sensor:
+  - platform: template
+    name: "Pump 0 output"
+    unit_of_measurement: "%"
+    update_interval: 2s
+    lambda: return wavemaker::channels[0].output();
+  - platform: template
+    name: "Pump 1 output"
+    unit_of_measurement: "%"
+    update_interval: 2s
+    lambda: return wavemaker::channels[1].output();
