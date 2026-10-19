@@ -68,7 +68,7 @@ def test_shapes_match_python_on_random_cases(binary):
 
 
 def test_example_modes_in_firmware(binary):
-    # the modes exactly as specified: wave 20-80 / 10 s, surge 30-60 / 20 s, pulse 15 s with 7 s on
+    # wave 20-80 / 10 s, surge 30-60 / 20 s (slow build), pulse 15 s with 7 s on
     script = ""
     wave = we.WaveParams(mode="wave", low=20, high=80, period=10)
     surge = we.WaveParams(mode="surge", low=30, high=60, period=20)
@@ -77,7 +77,7 @@ def test_example_modes_in_firmware(binary):
         for t in times:
             script += f"shape {params_line(p)} {t}\n"
     got = run(binary, script)
-    assert got[:3] == pytest.approx([20, 50, 80]) and got[3:6] == pytest.approx([30, 45, 30]) and got[6:] == [80, 80, 20, 80]
+    assert got[:3] == pytest.approx([20, 50, 80]) and got[3:6] == pytest.approx([30, 37.5, 30]) and got[6:] == [80, 80, 20, 80]
 
 
 def test_idempotent_set_is_ignored_and_new_settings_cross_fade(binary):

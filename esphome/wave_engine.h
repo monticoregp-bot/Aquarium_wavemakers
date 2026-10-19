@@ -80,8 +80,8 @@ inline double shape_value(const Params &p, double now) {
     phase -= std::floor(phase);
     if (p.mode == WAVE)
       value = p.low + (p.high - p.low) * (1.0 - std::cos(2.0 * PI * phase)) / 2.0;
-    else  // SURGE: linear build from low to high, then back to low
-      value = p.low + (p.high - p.low) * phase;
+    else  // SURGE: slow build (starts gently, steepens), then drops back to low
+      value = p.low + (p.high - p.low) * phase * phase;
   }
   if (p.invert) value = p.low + p.high - value;
   return value;

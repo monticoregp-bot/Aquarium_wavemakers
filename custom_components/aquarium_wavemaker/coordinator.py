@@ -45,6 +45,7 @@ from .wave_engine import (
     PumpConfig,
     WaveParams,
     describe,
+    display_name,
     next_change,
     resolve,
     validate_network,
@@ -52,6 +53,11 @@ from .wave_engine import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def available_actions(hass: HomeAssistant) -> list[str]:
+    """ESPHome actions ending in `_set_wave`, as "esphome.<device>_set_wave"."""
+    return sorted(f"esphome.{n}" for n in hass.services.async_services_for_domain("esphome") if n.endswith("_set_wave"))
 
 
 class AquariumWavemakerCoordinator:
@@ -181,11 +187,25 @@ class AquariumWavemakerCoordinator:
     async def async_set_pump(self, name: str, data: dict[str, Any]) -> None:
         validate_pump_name(name)
         new = PumpConfig.from_dict(data)  # may raise ValueError
-        validate_network({**self.pumps, name: new})  # sources exist, no loops
+        validate_network({**self.pumps, name: new})  # unique names, sources exist, no loops
+        old = self.pumps.get(name)
         self.pumps[name] = new
         await self._async_save()
+        if old is not None and old.label != new.label:
+            self._rename_device(name)  # entity ids stay; names shown everywhere follow the label
         self._kick.set()
         self._notify()
+
+    def pump_title(self, name: str) -> str:
+        """The name people see for a pump (its label, else its id made readable)."""
+        return display_name(name, self.pumps[name].label if name in self.pumps else "")
+
+    @callback
+    def _rename_device(self, name: str) -> None:
+        dev_reg = dr.async_get(self.hass)
+        device = dev_reg.async_get_device(identifiers={(DOMAIN, f"{self.entry.entry_id}_{name}")})
+        if device:
+            dev_reg.async_update_device(device.id, name=f"{self.tank_name} {self.pump_title(name)}")
 
     async def async_update_pump(self, name: str, changes: dict[str, Any]) -> None:
         cfg = self._pump(name)
@@ -222,6 +242,7 @@ class AquariumWavemakerCoordinator:
             params = self.live(name, now)
             change = self.next_change(name, now)
             pumps[name] = {
+                "label": display_name(name, cfg.label),
                 "config": cfg.to_dict(),
                 "current": {**params.to_dict(), "description": describe(params)},
                 "following": cfg.follow_source if cfg.follows_at(minute) else "",
@@ -232,10 +253,15 @@ class AquariumWavemakerCoordinator:
             "name": self.tank_name,
             "master_entity": self.master_entity,
             "master_on": self.auto_enabled,
+            "actions": self.available_actions(),
             "now": now.isoformat(),
             "now_minute": now.hour * 60 + now.minute + now.second / 60,
             "pumps": pumps,
         }
+
+    def available_actions(self) -> list[str]:
+        """ESPHome actions that look like this integration's `set_wave` (for pickers)."""
+        return available_actions(self.hass)
 
     # ------------------------------------------------------------------ #
     # the push loop

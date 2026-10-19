@@ -3,20 +3,33 @@
     "step": {
       "user": {
         "title": "Aquarium Wavemaker",
-        "description": "Create a Toggle helper first (Settings > Devices & services > Helpers > Create helper > Toggle) and select it as the master toggle. ON lets the schedule drive the pumps; OFF stops sending, and the pumps keep their last wave. Add the integration again for a second aquarium, each with its own toggle.",
+        "description": "This groups your wavemaker pumps into one aquarium. First create a Toggle helper (Settings > Devices & services > Helpers > Create helper > Toggle) and pick it here as the master toggle: ON lets the schedule control the pumps, OFF stops sending and each pump keeps running its last wave. Add the integration again for a second aquarium.",
         "data": {
           "name": "Aquarium name",
-          "master_entity": "Master toggle (input_boolean)"
+          "master_entity": "Master toggle"
+        },
+        "data_description": {
+          "name": "Used to name the devices, for example 'Reef Pump 1'.",
+          "master_entity": "An input_boolean helper. Each aquarium needs its own."
         }
       },
       "pump": {
-        "title": "First pump",
-        "description": "The ESPHome action is the one your wavemaker ESP32 exposes, for example esphome.wavemaker_set_wave (see the example wavemaker.yaml). The channel is the pump's number on that ESP32, starting at 0. You can add pumps, followers and schedules in the Aquarium Wavemaker card.",
+        "title": "Connect your first pump",
+        "description": "You do not pick a speed entity. Home Assistant tells your wavemaker ESP32 which wave to run by calling an ESPHome action on it (see esphome/wavemaker.yaml); the ESP32 then controls the motor itself. {found}\\n\\nMore pumps, schedules, followers and renaming are done in the Aquarium Wavemaker card.",
         "data": {
           "name": "Pump name",
-          "service": "ESPHome action",
-          "channel": "Channel on the ESP32"
+          "service": "Pump control (ESPHome action)",
+          "channel": "Which motor on that ESP32 (channel)"
+        },
+        "data_description": {
+          "name": "Letters, numbers and underscores. You can change the name shown later; this id stays the same.",
+          "service": "The action your ESP32 provides, named esphome.<device>_set_wave. One ESP32 has one action shared by all its pumps.",
+          "channel": "Counts from 0: the first motor output in the YAML is 0, the second is 1. Pumps on the same ESP32 share the action and differ in channel."
         }
+      },
+      "error": {
+        "invalid_name": "Use lowercase letters, digits and underscores only (max 32 characters).",
+        "invalid_service": "Use the form esphome.<device>_set_wave."
       }
     },
     "error": {

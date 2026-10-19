@@ -83,6 +83,29 @@ lovelace:
 If a card still says "Custom element doesn't exist", restart Home Assistant and hard-refresh
 the browser (Ctrl+Shift+R).
 
+### What do I add to connect a pump?
+
+**There is no speed entity to pick.** Other integrations here point at a light or a switch
+entity; this one is different, because the waveform is drawn on the ESP32. When you add a
+pump you give it two things:
+
+| Field | What it is |
+|---|---|
+| **Pump control (ESPHome action)** | The action your wavemaker ESP32 provides, named `esphome.<device>_set_wave` (for the example YAML, `esphome.wavemaker_set_wave`). Home Assistant calls it to tell the ESP32 which wave to run. It is **one action per ESP32**, shared by all of that ESP32's pumps. The setup step and the card offer the ones Home Assistant can currently see; you can also type the name if the ESP32 is offline |
+| **Which motor on that ESP32 (channel)** | Counts from 0. The first motor output in the YAML is channel 0, the second is channel 1. Two pumps on the same ESP32 use the same action with different channels |
+
+So for the example YAML with two motors, add `pump_1` with channel 0 and `pump_2` with channel 1,
+both using `esphome.wavemaker_set_wave`. You never add the PWM or enable pins to Home Assistant:
+they belong to the ESP32 firmware. If the action does not show up, the ESP32 is not running
+`wavemaker.yaml` yet or is offline (check Developer tools → Actions).
+
+### Renaming a pump
+
+Open the pump in the card and change **Pump name**, then Save. Only the name shown changes
+(tabs, summary card, device name, entity friendly names). The pump keeps its internal id, its
+entity ids, its followers and its wave timing, so nothing else breaks. Names must be unique.
+If you also want the entity ids renamed, do that from the entity settings in Home Assistant.
+
 ---
 
 ## Schedules
@@ -111,15 +134,15 @@ All waves are computed from the time since the block started, so every pump on t
 | **constant** | level | One speed |
 | **wave** | min, max, period | Smooth sine: starts at min, peaks at max mid-period, back to min |
 | **pulse** | min, max, period, pulse time | At max for the pulse time, at min for the rest of the period. The pulse time must be below the period, so 15 s with 7 s on is 8 s low |
-| **surge** | min, max, period | Builds linearly from min to max over the period; each period starts again at min |
+| **surge** | min, max, period | A **slow build**: starts gently and steepens (a quadratic curve) from min to max over the period, then drops straight back to min. Each period starts again at min |
 | **random** | min, max, change every (s) | Picks a new target between min and max every N seconds (default 10) and glides between targets with a smooth curve. Deterministic per block, so slaves and inverse pumps follow the same walk |
 
 ### Transitions
 
 When a block changes, the old and new waves **cross-fade** over the pump's cross-fade time
-(default 60 s, set per pump with a smooth ease). Separately, a **ramp limit** (default 100 %
+(default 60 s, set per pump with a smooth ease). Separately, a **speed change limit** (default 100 %
 per second) stops the motor ever changing faster than you allow, which also softens pulse
-edges and the surge drop. A pulse too short for the ramp limit to complete is softened rather
+edges and the surge drop. A pulse too short for the speed change limit to complete is softened rather
 than skipped.
 
 ---
@@ -140,7 +163,7 @@ Any pump can follow another pump's schedule, so you set a rig up once.
   cover the followed times**; they are locked, so what you see is what runs.
 - Chains work (pump 3 follows pump 2 which follows pump 1; an inverse of an inverse is back in
   phase). Loops are refused, a followed pump cannot be deleted, and chains are limited to 8.
-- A follower keeps its **own** motor settings (minimum, maximum, ramp limit, cross-fade): those
+- A follower keeps its **own** motor settings (minimum, maximum, speed change limit, cross-fade): those
   belong to the motor, not the schedule.
 
 Example: pump 2 inverse of pump 1, pump 4 inverse of pump 3, each pair on its own schedule.
@@ -153,7 +176,7 @@ Example: pump 2 inverse of pump 1, pump 4 inverse of pump 3, each pair on its ow
 |---|---|
 | Minimum running speed | A computed speed below this runs at this speed (so the motor does not stall). A computed 0 still means off. Default 10 % |
 | Maximum speed | Nothing exceeds this. Default 100 % |
-| Ramp limit | Largest change per second. Default 100 % per second |
+| Speed change limit | Largest change per second. Default 100 % per second |
 | Cross-fade time | Blend between blocks. Default 60 s |
 | Default level | Speed when no block is scheduled. Default 50 % |
 
@@ -169,15 +192,15 @@ Each pump becomes a device (for example **Reef Pump 1**) with:
 
 | Kind | Entities |
 |---|---|
-| `number` (config) | Minimum running speed, Maximum speed, Ramp limit, Default level, Cross-fade time |
+| `number` (config) | Minimum running speed, Maximum speed, Speed change limit, Default level, Cross-fade time |
 | `select` (config) | Follows (none or another pump), Follow relation (slave or inverse) |
 | `switch` (config) | Follow all day, Invert constant levels |
-| `sensor` | Mode, Setting (for example "wave 20-80%, 10 s", with all values as attributes), Next change |
+| `sensor` | Current mode, Current wave (for example "wave 20-80%, 10 s", with all values as attributes), Next change |
 
 Entity ids are built from the aquarium name and pump (`number.reef_pump_1_maximum_speed`); the
 device page shows the exact ids. Settings entities are views of the pump configuration: changing
 one validates and saves everything, and refuses a change that would make it invalid (with the
-reason, for example a loop or a block inside locked times). **Time blocks and follow windows are
+reason, for example a loop or a block inside locked times). **Time blocks, follow windows and the pump's name are
 edited in the card.**
 
 ### Service
@@ -201,8 +224,9 @@ master_entity: input_boolean.reef_waves      # optional with one aquarium
 
 Pump tabs; what each pump is doing now; follow settings with windows; the block list with
 mode-specific fields; motor settings; a **test wave** panel for bench testing; a 24 h timeline
-(bars show each block's min to max, hatching marks followed times, the dashed line is the default
-level); and a **waveform preview** of the selected block drawn by the same engine as the firmware.
+(each block is a 50 % coloured band spanning its min to max with a sketch of its shape on top, so you
+can tell wave, surge, pulse, random and constant apart at a glance; hatching marks followed times, the
+dashed line is the default level); and a **waveform preview** of the selected block drawn by the same engine as the firmware.
 Saving needs an admin user.
 
 ```yaml
@@ -262,7 +286,7 @@ pytest tests/
 - `test_wave_engine.py`: the modes as specified, block validation, midnight crossing, the example
   schedule, slaves, inverse pumps, partial follow windows and locking, chains and loops.
 - `test_cpp_parity.py`: compiles `esphome/wave_engine.h` and checks it against the Python
-  reference on hundreds of random cases, plus cross-fade, speed limits and the ramp limit.
+  reference on hundreds of random cases, plus cross-fade, speed limits and the speed change limit.
 - `test_integration.py`: real Home Assistant: entities, the pushes for the example schedule,
   block boundaries, the master toggle, an offline ESP32, followers and locking, the service, and the
   websocket API.

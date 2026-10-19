@@ -16,9 +16,13 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
 )
 
+from .coordinator import available_actions
 from .const import (
     CONF_INITIAL_CHANNEL,
     CONF_INITIAL_PUMP,
@@ -71,16 +75,36 @@ class AquariumWavemakerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_INITIAL_CHANNEL: int(user_input.get("channel", 0)),
                     },
                 )
+        # Offer the wavemaker actions Home Assistant can see right now. Typing another
+        # name is still allowed (for example if the ESP32 is offline at the moment).
+        found = available_actions(self.hass)
+        service_selector = (
+            SelectSelector(SelectSelectorConfig(options=found, custom_value=True, mode=SelectSelectorMode.DROPDOWN))
+            if found
+            else TextSelector()
+        )
         schema = vol.Schema(
             {
                 vol.Required("name", default="pump_1"): TextSelector(),
-                vol.Optional("service"): TextSelector(),
+                vol.Optional("service", default=found[0] if len(found) == 1 else vol.UNDEFINED): service_selector,
                 vol.Optional("channel", default=0): NumberSelector(
                     NumberSelectorConfig(min=0, max=MAX_CHANNEL, step=1, mode=NumberSelectorMode.BOX)
                 ),
             }
         )
-        return self.async_show_form(step_id="pump", data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id="pump",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "found": (
+                    "Found on your system: " + ", ".join(found) + "."
+                    if found
+                    else "None found yet. Flash the example wavemaker.yaml (or check the ESP32 is online), "
+                    "or type the action name, for example esphome.wavemaker_set_wave."
+                )
+            },
+        )
 
     @staticmethod
     @callback

@@ -1,7 +1,7 @@
 """Constants for Aquarium Wavemaker."""
 
 DOMAIN = "aquarium_wavemaker"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 CONF_MASTER_ENTITY = "master_entity"  # input_boolean: ON = the schedule drives the pumps
 CONF_INITIAL_PUMP = "initial_pump"

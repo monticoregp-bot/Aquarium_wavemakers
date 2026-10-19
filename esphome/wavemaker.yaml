@@ -12,7 +12,7 @@
 #     surge and random stay smooth whatever Wi-Fi or Home Assistant do. If either
 #     goes away the pump simply keeps running its last wave.
 #   * When settings change, the old and new waves cross-fade (60 s by default). The
-#     minimum speed, maximum speed and ramp limit you set in Home Assistant are
+#     minimum speed, maximum speed and speed change limit you set in Home Assistant are
 #     applied here, on the device, to protect the motor.
 #
 # In the integration, set each pump's "ESPHome action" to

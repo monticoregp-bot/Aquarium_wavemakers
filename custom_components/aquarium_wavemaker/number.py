@@ -13,7 +13,7 @@ from .entity import PumpEntity, async_setup_pump_entities
 _NUMBERS = (
     ("floor", "Minimum running speed", "mdi:speedometer-slow", 0, 100, 1, PERCENTAGE),
     ("cap", "Maximum speed", "mdi:speedometer", 0, 100, 1, PERCENTAGE),
-    ("slew", "Ramp limit", "mdi:slope-uphill", 1, 1000, 1, "%/s"),
+    ("slew", "Speed change limit", "mdi:slope-uphill", 1, 1000, 1, "%/s"),
     ("default_level", "Default level", "mdi:water-percent", 0, 100, 1, PERCENTAGE),
     ("fade_seconds", "Cross-fade time", "mdi:transition", 0, 600, 1, "s"),
 )

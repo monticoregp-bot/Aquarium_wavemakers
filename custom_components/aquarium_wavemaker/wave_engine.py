@@ -31,6 +31,7 @@ MAX_FOLLOW_DEPTH = 8
 NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 SERVICE_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 MAX_CHANNEL = 15
+MAX_LABEL = 40
 
 
 # --------------------------------------------------------------------------- #
@@ -59,6 +60,11 @@ def validate_pump_name(name: str) -> str:
             "underscores (max 32 characters)"
         )
     return name
+
+
+def display_name(key: str, label: str = "") -> str:
+    """The name shown to people: the pump's label, else its id made readable."""
+    return label or key.replace("_", " ").title()
 
 
 def _num(value: Any, label: str) -> float:
@@ -123,8 +129,8 @@ def shape_value(p: WaveParams, now: float) -> float:
         phase -= math.floor(phase)
         if p.mode == "wave":  # smooth sine: starts at low, peaks at high mid-period
             value = p.low + (p.high - p.low) * (1.0 - math.cos(2.0 * math.pi * phase)) / 2.0
-        else:  # surge: linear build from low to high, then back to low
-            value = p.low + (p.high - p.low) * phase
+        else:  # surge: slow build (starts gently, steepens), then drops back to low
+            value = p.low + (p.high - p.low) * phase * phase
     if p.invert:
         value = p.low + p.high - value
     return value
@@ -240,6 +246,8 @@ def _occupancy(ranges: list[tuple[int, int]]) -> list[int]:
 class PumpConfig:
     """Settings for one wavemaker pump."""
 
+    # shown everywhere; the pump's key (its id) never changes, so renaming is safe
+    label: str = ""
     # how Home Assistant reaches the ESP32 (an ESPHome action) and which channel
     service: str = ""
     channel: int = 0
@@ -261,6 +269,9 @@ class PumpConfig:
         self.validate()
 
     def validate(self) -> None:
+        self.label = " ".join(str(self.label or "").split())
+        if len(self.label) > MAX_LABEL:
+            raise ValueError(f"The pump name can be at most {MAX_LABEL} characters")
         self.service = (self.service or "").strip()
         if self.service and not SERVICE_RE.match(self.service):
             raise ValueError("The ESPHome action must look like esphome.node_set_wave")
@@ -348,7 +359,13 @@ class PumpConfig:
 
 
 def validate_network(pumps: dict[str, PumpConfig]) -> None:
-    """Cross-pump rules: sources exist, nothing follows itself, no cycles, bounded depth."""
+    """Cross-pump rules: names are unique, sources exist, no loops, bounded depth."""
+    names: dict[str, str] = {}
+    for key, cfg in pumps.items():
+        shown = display_name(key, cfg.label).casefold()
+        if shown in names:
+            raise ValueError(f"The name {display_name(key, cfg.label)!r} is already used by {names[shown]}")
+        names[shown] = key
     for name, cfg in pumps.items():
         seen, current = [name], cfg
         while current.follow_source:

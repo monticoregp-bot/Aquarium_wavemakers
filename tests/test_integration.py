@@ -91,7 +91,7 @@ async def test_entities_are_created_for_a_pump(hass):
     assert hass.states.get("number.reef_pump_1_minimum_running_speed").state == "10.0"
     assert hass.states.get("number.reef_pump_1_cross_fade_time").state == "60.0"
     assert hass.states.get("select.reef_pump_1_follows").state == "none"
-    assert hass.states.get("sensor.reef_pump_1_mode").state == "constant"  # no blocks yet: default level
+    assert hass.states.get("sensor.reef_pump_1_current_mode").state == "constant"  # no blocks yet: default level
 
 
 async def test_entity_edits_are_validated_and_synced(hass):
@@ -236,13 +236,13 @@ async def test_set_wave_service_sends_a_test_wave(hass):
     entry, coordinator, esp = await _setup(hass)
     await hass.services.async_call(
         DOMAIN, "set_wave",
-        {"entity_id": "sensor.reef_pump_1_setting", "mode": "pulse", "low": 20, "high": 80, "period": 15, "pulse": 7},
+        {"entity_id": "sensor.reef_pump_1_current_wave", "mode": "pulse", "low": 20, "high": 80, "period": 15, "pulse": 7},
         blocking=True,
     )
     call = esp.calls[-1]
     assert (call["mode"], call["pulse"], call["period"], call["fade"], call["invert"]) == ("pulse", 7, 15, 5, False)
     with pytest.raises(ServiceValidationError, match="Pulse time"):
-        await hass.services.async_call(DOMAIN, "set_wave", {"entity_id": "sensor.reef_pump_1_setting", "mode": "pulse", "period": 10, "pulse": 10}, blocking=True)
+        await hass.services.async_call(DOMAIN, "set_wave", {"entity_id": "sensor.reef_pump_1_current_wave", "mode": "pulse", "period": 10, "pulse": 10}, blocking=True)
 
 
 async def test_pumps_and_schedules_over_websocket(hass, hass_ws_client):
@@ -283,3 +283,77 @@ async def test_pumps_and_schedules_over_websocket(hass, hass_ws_client):
     await hass.async_block_till_done()
     assert hass.states.get("number.reef_pump_2_cross_fade_time") is None
     assert hass.states.get("number.reef_pump_1_cross_fade_time") is not None
+
+
+
+# ------------------------------------------------------------------- renaming
+async def test_pumps_can_be_renamed_without_breaking_anything(hass):
+    from homeassistant.helpers import device_registry as dr
+
+    entry, c, esp = await _setup(hass)
+    await c.async_update_pump("pump_1", {"blocks": EXAMPLE})
+    await c.async_set_pump("pump_2", {"service": ACTION, "channel": 1, "follow_source": "pump_1", "follow_relation": "inverse"})
+    await settle(hass)
+    seed_before = c.live("pump_1", today(7)).seed
+
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_device(identifiers={(DOMAIN, f"{entry.entry_id}_pump_1")})
+    assert device.name == "Reef Pump 1"
+
+    await c.async_update_pump("pump_1", {"label": "Left return"})
+    await settle(hass)
+    device = dev_reg.async_get_device(identifiers={(DOMAIN, f"{entry.entry_id}_pump_1")})
+    assert device.name == "Reef Left return"
+    assert hass.states.get("number.reef_pump_1_minimum_running_speed") is not None  # entity ids are stable
+    assert "Left return" in hass.states.get("number.reef_pump_1_minimum_running_speed").attributes["friendly_name"]
+    assert c.pumps["pump_2"].follow_source == "pump_1"  # followers keep working
+    assert c.live("pump_1", today(7)).seed == seed_before  # same waveform and phase
+    assert c.snapshot()["pumps"]["pump_1"]["label"] == "Left return"
+
+    with pytest.raises(ValueError, match="already used"):
+        await c.async_update_pump("pump_2", {"label": "left RETURN"})
+    with pytest.raises(ValueError, match="already used"):
+        await c.async_update_pump("pump_1", {"label": "Pump 2"})  # clashes with pump_2's default name
+    await c.async_update_pump("pump_1", {"label": ""})  # back to the default
+    assert c.snapshot()["pumps"]["pump_1"]["label"] == "Pump 1"
+
+
+async def test_rename_over_websocket(hass, hass_ws_client):
+    entry, c, esp = await _setup(hass)
+    client = await hass_ws_client(hass)
+    cfg = {**c.pumps["pump_1"].to_dict(), "label": "Rear left"}
+    await client.send_json({"id": 1, "type": "aquarium_wavemaker/set_pump", "name": "pump_1", "config": cfg})
+    msg = await client.receive_json()
+    assert msg["success"] and msg["result"]["pumps"]["pump_1"]["label"] == "Rear left"
+
+
+# ------------------------------------------------- connecting a pump (config flow)
+async def test_setup_offers_the_actions_home_assistant_can_see(hass):
+    Esp(hass)  # registers esphome.wm_set_wave
+    assert await async_setup_component(hass, "input_boolean", {"input_boolean": {"aquarium_wavemaker": {}}})
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    assert result["step_id"] == "user"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"name": "Reef", "master_entity": MASTER})
+    assert result["step_id"] == "pump"
+    assert "esphome.wm_set_wave" in result["description_placeholders"]["found"]
+
+    bad = await hass.config_entries.flow.async_configure(result["flow_id"], {"name": "Left", "service": "not an action", "channel": 0})
+    assert bad["errors"] == {"service": "invalid_service"}
+    done = await hass.config_entries.flow.async_configure(result["flow_id"], {"name": "Left Pump", "service": "esphome.wm_set_wave", "channel": 1})
+    assert done["type"] == "create_entry"
+    assert done["data"]["initial_pump"] == "left_pump" and done["data"]["initial_service"] == "esphome.wm_set_wave"
+    assert done["data"]["initial_channel"] == 1
+
+
+async def test_setup_explains_what_to_do_when_no_action_is_found(hass):
+    assert await async_setup_component(hass, "input_boolean", {"input_boolean": {"aquarium_wavemaker": {}}})
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"name": "Reef", "master_entity": MASTER})
+    assert "None found yet" in result["description_placeholders"]["found"]
+    done = await hass.config_entries.flow.async_configure(result["flow_id"], {"name": "pump_1", "service": "", "channel": 0})
+    assert done["type"] == "create_entry"  # the action can be filled in later in the card
+
+
+async def test_snapshot_lists_the_available_actions_for_the_card(hass):
+    entry, c, esp = await _setup(hass)
+    assert c.snapshot()["actions"] == [ACTION]

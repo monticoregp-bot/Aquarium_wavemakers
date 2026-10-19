@@ -22,7 +22,7 @@ const DAY = 1440;
 const MODES = [
   ["wave", "Wave (sine)"],
   ["pulse", "Pulse"],
-  ["surge", "Surge (ramp up)"],
+  ["surge", "Surge (slow build)"],
   ["random", "Random"],
   ["constant", "Constant"],
 ];
@@ -61,14 +61,55 @@ const CSS_COMMON = `
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }`;
 
 const LEGEND = `<div class="legend">${MODES.map(([m, l]) => `<span><i style="background:${MODE_COLOR[m]}"></i>${l.split(" ")[0].toLowerCase()}</span>`).join("")}
-  <span><i style="background:repeating-linear-gradient(45deg,var(--secondary-text-color) 0 2px,transparent 2px 5px)"></i>follows another pump</span></div>`;
+  <span><i style="background:repeating-linear-gradient(45deg,var(--secondary-text-color) 0 2px,transparent 2px 5px)"></i>follows another pump</span>
+  <span>The wave sketch shows the mode, not exact timing or level.</span></div>`;
 
 /* ----------------------------------------------------------------- timeline */
+/** Deterministic pseudo-random value in [0,1) for the random-mode sketch. */
+const rnd = (seed, k) => {
+  let x = (Math.imul(seed, 374761393) + Math.imul(k, 668265263)) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177);
+  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+
+/**
+ * A small sketch of a mode's shape inside a band, for recognising wave / surge /
+ * pulse / random at a glance. It is illustrative: not to scale in time or level,
+ * and it does not need to touch the band's edges.
+ */
+function glyphPath(b, x1, x2, top, bottom, seed) {
+  const w = x2 - x1;
+  const cw = w >= 90 ? 30 : Math.max(10, w / 3); // width of one sketched cycle
+  const y = (v) => (bottom - v * (bottom - top)).toFixed(1); // v: 0 = bottom, 1 = top
+  const pts = [];
+  const push = (x, v) => pts.push(`${pts.length ? "L" : "M"}${Math.min(x, x2).toFixed(1)},${y(v)}`);
+  if (b.mode === "constant") return `M${x1.toFixed(1)},${y(0.5)} L${x2.toFixed(1)},${y(0.5)}`;
+  if (b.mode === "random") {
+    for (let x = x1; x <= x2 + 0.5; x += 2) {
+      const pos = (x - x1) / cw, k = Math.floor(pos), f = pos - k;
+      const wgt = (1 - Math.cos(Math.PI * f)) / 2;
+      push(x, rnd(seed, k) * (1 - wgt) + rnd(seed, k + 1) * wgt);
+    }
+    return pts.join(" ");
+  }
+  const duty = Math.min(0.85, Math.max(0.15, (b.pulse || 5) / (b.period || 10)));
+  for (let c = x1; c < x2; c += cw) {
+    if (b.mode === "pulse") {
+      push(c, 1); push(c + cw * duty, 1); push(c + cw * duty, 0); push(c + cw, 0);
+    } else if (b.mode === "surge") {
+      for (let i = 0; i <= 16; i++) push(c + (cw * i) / 16, (i / 16) ** 2); // slow build...
+      push(c + cw, 0); // ...then straight back down
+    } else {
+      for (let i = 0; i <= 16; i++) push(c + (cw * i) / 16, (1 - Math.cos((2 * Math.PI * i) / 16)) / 2);
+    }
+  }
+  return pts.join(" ");
+}
 const segments = (startMin, lenMin) => (startMin + lenMin <= DAY ? [[startMin, startMin + lenMin]] : [[startMin, DAY], [0, startMin + lenMin - DAY]]);
 const spanLen = (s, e) => (((e - s) % DAY) + DAY) % DAY || DAY;
 
 /** 24 h strip: each block as a band between its min and max, follow windows hatched. */
-function timelineSvg(cfg, nowMin, { height = 130, labels = true } = {}) {
+function timelineSvg(cfg, nowMin, { height = 130, labels = true, names = {} } = {}) {
   const W = 720, L = labels ? 34 : 8, R = 8, T = 8, B = labels ? 22 : 6, H = height;
   const x = (m) => L + (m / DAY) * (W - L - R);
   const y = (v) => T + (1 - v / 100) * (H - T - B);
@@ -86,17 +127,27 @@ function timelineSvg(cfg, nowMin, { height = 130, labels = true } = {}) {
   }
   // default level shows through wherever no block is scheduled
   out += `<line x1="${L}" x2="${W - R}" y1="${y(cfg.default_level)}" y2="${y(cfg.default_level)}" stroke="var(--secondary-text-color)" stroke-width="1.5" stroke-dasharray="5 4" opacity=".6"/>`;
-  for (const b of cfg.blocks || []) {
+  const minBand = labels ? 28 : 18; // bands are drawn at least this tall so the sketch stays readable
+  const plotTop = T, plotBottom = H - B;
+  (cfg.blocks || []).forEach((b, idx) => {
     const s = toMin(b.start), len = spanLen(s, toMin(b.end));
+    const flat = b.mode === "constant";
+    const center = flat ? y(b.level) : (y(b.high) + y(b.low)) / 2;
+    const trueH = flat ? 0 : y(b.low) - y(b.high);
+    const hgt = Math.max(trueH, minBand);
+    const top = Math.min(Math.max(center - hgt / 2, plotTop), plotBottom - hgt);
+    const pad = hgt * 0.16;
     for (const [a, z] of segments(s, len)) {
       const w = x(z) - x(a);
-      const flat = b.mode === "constant";
-      const top = flat ? y(b.level) - 3 : y(b.high);
-      const hgt = flat ? 6 : Math.max(4, y(b.low) - y(b.high));
-      out += `<rect x="${x(a)}" y="${top}" width="${w}" height="${hgt}" rx="2" fill="${MODE_COLOR[b.mode]}" opacity="${flat ? 0.95 : 0.6}"><title>${b.start}-${b.end} ${b.mode}</title></rect>`;
+      out += `<rect x="${x(a)}" y="${top}" width="${w}" height="${hgt}" rx="3" fill="${MODE_COLOR[b.mode]}" opacity="0.5"><title>${b.start}-${b.end} ${b.mode}</title></rect>`;
+      if (w > 10) {
+        const d = glyphPath(b, x(a), x(z), top + pad, top + hgt - pad, idx * 7919 + 13);
+        out += `<path d="${d}" fill="none" stroke="var(--card-background-color)" stroke-width="4" stroke-linejoin="round" opacity="0.55"/>
+                <path d="${d}" fill="none" stroke="${MODE_COLOR[b.mode]}" stroke-width="2" stroke-linejoin="round"/>`;
+      }
       if (labels && w > 64) out += `<text x="${x(a) + w / 2}" y="${Math.max(top - 4, T + 10)}" text-anchor="middle" font-size="11" fill="var(--primary-text-color)">${b.mode}</text>`;
     }
-  }
+  });
   if (cfg.follow_source) {
     const wins = cfg.follow_all_day ? [[0, DAY]] : (cfg.follow_windows || []).map(([s, e]) => [toMin(s), spanLen(toMin(s), toMin(e))]);
     let widest = null;
@@ -107,9 +158,15 @@ function timelineSvg(cfg, nowMin, { height = 130, labels = true } = {}) {
         if (!widest || z - a > widest[1] - widest[0]) widest = [a, z];
       }
     }
-    if (widest && x(widest[1]) - x(widest[0]) > 90) {
-      const label = `follows ${cfg.follow_source}${cfg.follow_relation === "inverse" ? " (inverse)" : ""}`;
-      out += `<text x="${(x(widest[0]) + x(widest[1])) / 2}" y="${T + (H - T - B) / 2}" text-anchor="middle" font-size="12" fill="var(--primary-text-color)" font-weight="600">${esc(label)}</text>`;
+    if (widest) {
+      // pick the longest wording that fits inside the hatched window (about 6.8 units per character)
+      const avail = x(widest[1]) - x(widest[0]) - 12;
+      const nm = names[cfg.follow_source] || cfg.follow_source;
+      const inv = cfg.follow_relation === "inverse";
+      const text = [`follows ${nm}${inv ? " (inverse)" : ""}`, `${inv ? "inverse of" : "follows"} ${nm}`, inv ? "inverse" : "follows"].find((t) => t.length * 6.8 <= avail);
+      if (text) {
+        out += `<text x="${(x(widest[0]) + x(widest[1])) / 2}" y="${T + (H - T - B) / 2}" text-anchor="middle" font-size="12" fill="var(--primary-text-color)" font-weight="600">${esc(text)}</text>`;
+      }
     }
   }
   out += `<line x1="${x(nowMin)}" x2="${x(nowMin)}" y1="${T}" y2="${H - B}" stroke="var(--primary-text-color)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
@@ -138,6 +195,7 @@ function waveSvg(wave) {
 }
 
 const summary = (p) => p.current.description;
+const namesOf = (data) => Object.fromEntries(Object.entries(data.pumps).map(([k, p]) => [k, p.label]));
 
 /* =========================================================== editor card */
 class AquariumWavemakerCard extends HTMLElement {
@@ -230,7 +288,7 @@ class AquariumWavemakerCard extends HTMLElement {
     const d = this._draft;
     const n = (v) => (v === "" || v == null ? 0 : Number(v));
     return {
-      service: d.service || "", channel: n(d.channel), floor: n(d.floor), cap: n(d.cap), slew: n(d.slew),
+      label: d.label || "", service: d.service || "", channel: n(d.channel), floor: n(d.floor), cap: n(d.cap), slew: n(d.slew),
       fade_seconds: n(d.fade_seconds), default_level: n(d.default_level),
       follow_source: d.follow_source || "", follow_relation: d.follow_relation, follow_all_day: !!d.follow_all_day,
       follow_windows: d.follow_windows || [], follow_constant: d.follow_constant,
@@ -474,7 +532,7 @@ class AquariumWavemakerCard extends HTMLElement {
         <div class="tabs" id="tabs"></div>
         <div id="statusbox"></div>
         <div id="form"></div>
-        <div class="muted" style="margin-top:14px">24 h schedule: bars show each block's minimum to maximum, the dashed line is the default level.</div>
+        <div class="muted" style="margin-top:14px">24 h schedule: each coloured band spans its block's minimum to maximum (very narrow ranges are drawn a little taller so the sketch stays readable); the dashed line is the default level.</div>
         <svg id="timeline" viewBox="0 0 720 130" role="img" aria-label="Wave schedule over 24 hours"></svg>
         ${LEGEND}
         <div class="muted" style="margin-top:12px" id="wavetitle"></div>
@@ -505,7 +563,7 @@ class AquariumWavemakerCard extends HTMLElement {
   _renderTabs() {
     const names = Object.keys(this._data.pumps);
     this._root("tabs").innerHTML =
-      names.map((n) => `<button data-act="tab:${esc(n)}" class="${n === this._sel ? "sel" : ""}">${esc(n)}</button>`).join("") +
+      names.map((n) => `<button data-act="tab:${esc(n)}" class="${n === this._sel ? "sel" : ""}">${esc(this._data.pumps[n].label)}</button>`).join("") +
       `<button data-act="add">+ Add pump</button>`;
   }
 
@@ -519,9 +577,9 @@ class AquariumWavemakerCard extends HTMLElement {
     const cur = p.current, now = this._data.now;
     box.innerHTML = `<div class="row">
       <span class="chip"><i style="background:${MODE_COLOR[cur.mode]}"></i>${esc(summary(p))}</span>
-      ${p.following ? `<span class="chip">Following ${esc(p.following)}${p.config.follow_relation === "inverse" ? " (inverse)" : ""}</span>` : ""}
+      ${p.following ? `<span class="chip">Following ${esc(this._data.pumps[p.following]?.label || p.following)}${p.config.follow_relation === "inverse" ? " (inverse)" : ""}</span>` : ""}
       <span class="chip">Next change ${esc(when(p.next_change, now))}</span>
-      ${p.followers.length ? `<span class="chip">Followed by ${esc(p.followers.join(", "))}</span>` : ""}</div>`;
+      ${p.followers.length ? `<span class="chip">Followed by ${esc(p.followers.map((k) => this._data.pumps[k]?.label || k).join(", "))}</span>` : ""}</div>`;
   }
 
   _paramFields(prefix, o) {
@@ -550,7 +608,7 @@ class AquariumWavemakerCard extends HTMLElement {
 
     const follow = `<fieldset><legend>Follow another pump</legend>
       <div class="grid">
-        <label>Follows<select data-k="follow_source"><option value="">none (own schedule)</option>${others.map((n) => `<option value="${esc(n)}" ${n === d.follow_source ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>
+        <label>Follows<select data-k="follow_source"><option value="">none (own schedule)</option>${others.map((n) => `<option value="${esc(n)}" ${n === d.follow_source ? "selected" : ""}>${esc(this._data.pumps[n].label)}</option>`).join("")}</select></label>
         <label>Relation<select data-k="follow_relation" ${d.follow_source ? "" : "disabled"}>${RELATIONS.map(([v, l]) => `<option value="${v}" ${v === d.follow_relation ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       </div>
       ${d.follow_source ? `<div class="row" style="margin-top:8px">
@@ -560,8 +618,8 @@ class AquariumWavemakerCard extends HTMLElement {
           <input type="time" data-w="${i}:0" value="${esc(w[0])}"> to <input type="time" data-w="${i}:1" value="${esc(w[1])}">
           <button data-act="delwin:${i}">Remove</button></div>`).join("")}
         <button data-act="addwin">Add follow window</button>
-        <div class="muted">During these times this pump follows ${esc(d.follow_source)}. Its own blocks cannot cover them: those times are locked.</div></div>` : ""}
-      ${locked ? `<div class="banner">This pump follows <b>${esc(d.follow_source)}</b> all day${d.follow_relation === "inverse" ? ", in opposite phase" : ""}, so its own schedule is locked. Motor limits below still apply to this pump.</div>` : ""}
+        <div class="muted">During these times this pump follows ${esc(this._data.pumps[d.follow_source]?.label || d.follow_source)}. Its own blocks cannot cover them: those times are locked.</div></div>` : ""}
+      ${locked ? `<div class="banner">This pump follows <b>${esc(this._data.pumps[d.follow_source]?.label || d.follow_source)}</b> all day${d.follow_relation === "inverse" ? ", in opposite phase" : ""}, so its own schedule is locked. Motor limits below still apply to this pump.</div>` : ""}
     </fieldset>`;
 
     const blocks = (d.blocks || []).map((b, i) => `<div class="block ${i === this._index ? "picked" : ""}">
@@ -577,27 +635,36 @@ class AquariumWavemakerCard extends HTMLElement {
       <div class="muted">A block may cross midnight (for example 21:10 to 06:00). Blocks cannot overlap; start equal to end means the whole day. At each change the pump cross-fades over the cross-fade time below.</div>
     </fieldset>`;
 
-    const motor = `<fieldset><legend>Pump and motor protection</legend>
+    const actions = this._data.actions || [];
+    const connect = `<fieldset><legend>Pump name and connection</legend>
       <div class="grid">
-        <label>ESPHome action<input data-k="service" type="text" value="${esc(d.service)}" placeholder="esphome.wavemaker_set_wave"></label>
-        ${f("channel", "Channel on the ESP32", "number", 'min="0" max="15" step="1"')}
+        <label>Pump name<input data-k="label" type="text" maxlength="40" value="${esc(d.label)}" placeholder="${esc(this._pump()?.label || "")}"></label>
+        <label>Pump control (ESPHome action)<input data-k="service" type="text" list="wm-actions" value="${esc(d.service)}" placeholder="esphome.wavemaker_set_wave" autocomplete="off">
+          <datalist id="wm-actions">${actions.map((a) => `<option value="${esc(a)}"></option>`).join("")}</datalist></label>
+        ${f("channel", "Which motor on that ESP32 (channel)", "number", 'min="0" max="15" step="1"')}
+      </div>
+      <div class="muted">There is no speed entity to pick. Home Assistant calls the ESPHome action above on your wavemaker ESP32, and the ESP32 runs the wave and drives the motor itself. The action is named <code>esphome.&lt;device&gt;_set_wave</code> and is shared by every pump on that ESP32; the channel says which motor (the first output is 0). ${actions.length ? `Found on your system: ${actions.map(esc).join(", ")}.` : "None found right now: flash the example wavemaker.yaml and check the ESP32 is online."}</div>
+      <div class="muted">Renaming only changes the name shown. The pump keeps its id, entity ids, followers and wave timing.</div>
+    </fieldset>`;
+    const motor = `<fieldset><legend>Motor protection</legend>
+      <div class="grid">
         ${f("floor", "Minimum running speed %", "number", 'min="0" max="100" step="1"')}
         ${f("cap", "Maximum speed %", "number", 'min="0" max="100" step="1"')}
-        ${f("slew", "Ramp limit (% per second)", "number", 'min="1" max="1000" step="1"')}
-        ${f("fade_seconds", "Cross-fade time (s)", "number", 'min="0" max="600" step="1"')}
+        ${f("slew", "Speed change limit (% per second)", "number", 'min="1" max="1000" step="1"')}
+        ${f("fade_seconds", "Cross-fade between blocks (s)", "number", 'min="0" max="600" step="1"')}
       </div>
-      <div class="muted">Computed speeds below the minimum run at the minimum (a computed 0 means off); nothing exceeds the maximum; the ramp limit stops the motor jumping, for example at pulse edges.</div>
+      <div class="muted">Applied on the ESP32. A computed speed below the minimum runs at the minimum (a computed 0 means off); nothing exceeds the maximum; the change limit stops the motor jumping, for example at pulse edges.</div>
     </fieldset>`;
 
     const m = this._manual;
     const manual = `<fieldset><legend>Test wave (not saved)</legend>
       <div class="grid">${modeSel('data-m="mode"', m.mode)}${this._paramFields("data-m", m)}
         <label>Cross-fade (s)<input data-m="fade" type="number" min="0" max="600" value="${esc(m.fade)}"></label></div>
-      <div class="actions"><button data-act="send">Send to ${esc(this._sel)}</button>
+      <div class="actions"><button data-act="send">Send to ${esc(this._pump()?.label || this._sel)}</button>
         <span class="muted">While the master toggle is on the schedule replaces this within a minute.</span></div>
     </fieldset>`;
 
-    el.innerHTML = `${follow}${schedule}${motor}${manual}
+    el.innerHTML = `${connect}${follow}${schedule}${motor}${manual}
       <div class="actions">
         <button class="primary" id="save" data-act="save" ${this._dirty ? "" : "disabled"}>Save</button>
         <button id="revert" data-act="revert" ${this._dirty ? "" : "disabled"}>Revert</button>
@@ -612,7 +679,7 @@ class AquariumWavemakerCard extends HTMLElement {
       if (svg) svg.innerHTML = "";
       return;
     }
-    svg.innerHTML = timelineSvg(this._draft, this._data.now_minute);
+    svg.innerHTML = timelineSvg(this._draft, this._data.now_minute, { names: namesOf(this._data) });
   }
 
   _drawWave() {
@@ -666,7 +733,7 @@ class AquariumWavemakerSummaryCard extends HTMLElement {
         h2 { margin: 0 0 8px; font-size: 1.25rem; font-weight: 500; }
         .pump { padding: 10px 0; border-top: 1px solid var(--divider-color); }
         .pump:first-of-type { border-top: 0; }
-        .name { font-weight: 500; text-transform: capitalize; margin-right: 4px; }
+        .name { font-weight: 500; margin-right: 4px; }
         .paused { color: var(--secondary-text-color); font-size: .85rem; margin-bottom: 6px; }
       </style>
       <ha-card>
@@ -700,11 +767,11 @@ class AquariumWavemakerSummaryCard extends HTMLElement {
         .map((n) => {
           const p = data.pumps[n];
           return `<div class="pump">
-            <div class="row"><span class="name">${esc(n)}</span>
+            <div class="row"><span class="name">${esc(p.label)}</span>
               <span class="chip"><i style="background:${MODE_COLOR[p.current.mode]}"></i>${esc(summary(p))}</span>
-              ${p.following ? `<span class="chip">${p.config.follow_relation === "inverse" ? "inverse of" : "follows"} ${esc(p.following)}</span>` : ""}
+              ${p.following ? `<span class="chip">${p.config.follow_relation === "inverse" ? "inverse of" : "follows"} ${esc(data.pumps[p.following]?.label || p.following)}</span>` : ""}
               <span class="chip">Next ${esc(when(p.next_change, data.now))}</span></div>
-            <svg viewBox="0 0 720 60" role="img" aria-label="${esc(n)} schedule over 24 hours">${timelineSvg(p.config, data.now_minute, { height: 60, labels: false })}</svg></div>`;
+            <svg viewBox="0 0 720 60" role="img" aria-label="${esc(p.label)} schedule over 24 hours">${timelineSvg(p.config, data.now_minute, { height: 60, labels: false, names: namesOf(data) })}</svg></div>`;
         })
         .join("") + (names.length ? LEGEND : "");
     this._timer = setTimeout(() => this._load(), 30000);

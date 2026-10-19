@@ -17,8 +17,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_setup_pump_entities(
         hass, entry, async_add_entities,
         lambda coord, e, pump: [
-            ScheduledMode(coord, e, pump, "mode", "Mode", "mdi:sine-wave"),
-            ScheduledSetting(coord, e, pump, "setting", "Setting", "mdi:waves"),
+            ScheduledMode(coord, e, pump, "mode", "Current mode", "mdi:sine-wave"),
+            ScheduledSetting(coord, e, pump, "setting", "Current wave", "mdi:waves"),
             NextChange(coord, e, pump, "next_change", "Next change", "mdi:clock-outline"),
         ],
     )

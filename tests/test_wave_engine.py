@@ -47,13 +47,19 @@ def test_wave_is_a_smooth_sine_from_low_to_high_and_back():
     assert max(abs(b - a) for a, b in zip(vals, vals[1:])) < 60 * math.pi / 10 * 0.02 + 1e-9
 
 
-def test_surge_builds_linearly_from_min_to_max_each_period():
+def test_surge_is_a_slow_build_that_steepens_then_drops_each_period():
     p = P(mode="surge", low=30, high=60, period=20)
-    assert we.shape_value(p, 0) == pytest.approx(30)
-    assert we.shape_value(p, 10) == pytest.approx(45)
-    assert we.shape_value(p, 19.999) == pytest.approx(60, abs=0.01)
-    assert we.shape_value(p, 20) == pytest.approx(30)  # next period starts back at min
-    assert we.shape_value(p, 30) == pytest.approx(45)
+    assert we.shape_value(p, 0) == pytest.approx(30)  # each period starts at min
+    assert we.shape_value(p, 5) == pytest.approx(30 + 30 * 0.25 ** 2)  # still barely moving at 25 %
+    assert we.shape_value(p, 10) == pytest.approx(37.5)  # only a quarter of the way up at the halfway point
+    assert we.shape_value(p, 15) == pytest.approx(30 + 30 * 0.75 ** 2)
+    assert we.shape_value(p, 19.999) == pytest.approx(60, abs=0.05)  # peaks right at the end of the period
+    assert we.shape_value(p, 20) == pytest.approx(30)  # then drops straight back to min
+    assert we.shape_value(p, 30) == pytest.approx(37.5)  # and repeats
+    # convex: the second half of the period climbs far more than the first
+    assert we.shape_value(p, 10) - 30 < 60 - we.shape_value(p, 10)
+    steps = [we.shape_value(p, i * 0.1) for i in range(200)]
+    assert all(b >= a for a, b in zip(steps, steps[1:]))  # never dips while building
 
 
 def test_pulse_is_high_for_the_pulse_time_and_low_for_the_remainder():
@@ -293,3 +299,31 @@ def test_block_preview_samples():
     assert min(wave["values"]) == pytest.approx(20, abs=0.1) and max(wave["values"]) == pytest.approx(80, abs=0.1)
     rnd = we.block_preview(we.Block(mode="random", low=10, high=90, interval=10))
     assert rnd["duration"] == 120 and all(10 <= v <= 90 for v in rnd["values"])
+
+
+# ------------------------------------------------------------- display names
+def test_display_name_defaults_to_the_id_made_readable():
+    assert we.display_name("left_return") == "Left Return"
+    assert we.display_name("pump_1", "Front glass") == "Front glass"
+
+
+def test_label_is_normalised_and_limited():
+    assert pump(label="  Front   glass ").label == "Front glass"
+    with pytest.raises(ValueError, match="at most 40"):
+        pump(label="x" * 41)
+
+
+def test_display_names_must_be_unique_across_pumps():
+    ok = {"a": pump(label="Left"), "b": pump(label="Right"), "c": pump()}
+    we.validate_network(ok)
+    with pytest.raises(ValueError, match="already used"):
+        we.validate_network({"a": pump(label="Left"), "b": pump(label="left")})
+    with pytest.raises(ValueError, match="already used"):
+        we.validate_network({"pump_1": pump(), "other": pump(label="Pump 1")})  # clashes with a default name
+
+
+def test_renaming_does_not_change_the_waveform_or_follow_links():
+    before = {"a": pump(blocks=[block("00:00", "00:00", "random", low=10, high=90)]), "b": pump(follow_source="a")}
+    after = {"a": pump(label="Renamed", blocks=[block("00:00", "00:00", "random", low=10, high=90)]), "b": pump(follow_source="a")}
+    assert we.resolve(before, "a", at("12:00")) == we.resolve(after, "a", at("12:00"))  # same seed
+    assert we.resolve(after, "b", at("12:00")) == we.resolve(after, "a", at("12:00"))

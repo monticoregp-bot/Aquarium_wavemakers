@@ -34,7 +34,7 @@ class PumpEntity(Entity):
         self._attr_unique_id = f"{entry.entry_id}_{pump}_{key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{entry.entry_id}_{pump}")},
-            name=f"{coordinator.tank_name} {pump.replace('_', ' ').title()}",
+            name=f"{coordinator.tank_name} {coordinator.pump_title(pump)}",
             manufacturer="Aquarium Wavemaker",
             model="Wavemaker pump",
         )
